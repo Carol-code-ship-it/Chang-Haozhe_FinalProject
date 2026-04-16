@@ -1,0 +1,1409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gardens</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+    }
+
+    video, canvas, #tint {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    canvas,
+    #tint {
+      pointer-events: none;
+    }
+
+    #tint {
+      z-index: 4;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(170, 220, 255, 0.14), transparent 45%),
+        linear-gradient(to bottom, rgba(90, 155, 255, 0.10), rgba(70, 130, 255, 0.08));
+      mix-blend-mode: screen;
+      opacity: 1;
+    }
+
+    #menu {
+      position: absolute;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 86vw;
+      user-select: none;
+    }
+
+    #sidebar {
+      position: absolute;
+      right: 18px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 22;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      user-select: none;
+    }
+
+    .mode-btn,
+    .time-btn {
+      color: rgba(255,255,255,0.96);
+      font-size: 17px;
+      line-height: 1;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      transition: 0.18s ease;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .time-btn {
+      min-width: 92px;
+      text-align: center;
+    }
+
+    .mode-btn:hover,
+    .mode-btn.active,
+    .time-btn:hover,
+    .time-btn.active {
+      background: rgba(180, 220, 255, 0.12);
+      border-color: rgba(180, 220, 255, 0.42);
+      box-shadow: 0 0 18px rgba(160, 220, 255, 0.20);
+    }
+
+    #hint {
+      position: absolute;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 20;
+      padding: 10px 16px;
+      border-radius: 999px;
+      color: rgba(255,255,255,0.90);
+      font-size: 13px;
+      background: rgba(0,0,0,0.26);
+      border: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      pointer-events: none;
+      white-space: nowrap;
+      text-align: center;
+      max-width: 88vw;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="tint"></div>
+  <canvas id="canvas"></canvas>
+
+  <div id="menu">
+    <div class="mode-btn" data-mode="clear">Clear</div>
+    <div class="mode-btn" data-mode="pearls">Pearls</div>
+    <div class="mode-btn active" data-mode="flowers">Flowers</div>
+    <div class="mode-btn" data-mode="grass">Grass</div>
+    <div class="mode-btn" data-mode="vines">Vines</div>
+    <div class="mode-btn" data-mode="butterflies">Butterflies/Dragonflies</div>
+  </div>
+
+  <div id="sidebar">
+    <div class="time-btn active" data-time="morning">Day</div>
+    <div class="time-btn" data-time="night">Night</div>
+  </div>
+
+  <div id="hint">Pinch thumb + index to grow your garden! Release to stop. To grow Grass mode, use the rock sign (index + pinky up). Hint: Open mouth to watch flowers bloom 🌸
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const tint = document.getElementById("tint");
+    const buttons = [...document.querySelectorAll(".mode-btn")];
+    const timeButtons = [...document.querySelectorAll(".time-btn")];
+
+    let W = window.innerWidth;
+    let H = window.innerHeight;
+    let DPR = window.devicePixelRatio || 1;
+
+    function resize() {
+      W = window.innerWidth;
+      H = window.innerHeight;
+      DPR = window.devicePixelRatio || 1;
+      canvas.width = W * DPR;
+      canvas.height = H * DPR;
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(DPR, DPR);
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function dist(x1, y1, x2, y2) { return Math.hypot(x2 - x1, y2 - y1); }
+    function rand(min, max) { return Math.random() * (max - min) + min; }
+    function choice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+    let timeMode = "morning";
+
+    const visualProfiles = {
+      morning: {
+        neon: 0.8,
+        tintOpacity: 0.9,
+        tintBG:
+          "linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0.02))",
+        sparkleAlpha: 0.8,
+        blueLift: 0.12
+      },
+      night: {
+        neon: 2.2,
+        tintOpacity: 10,
+        tintBG:
+          "linear-gradient(to bottom, rgba(0,120,255,0.15), rgba(0,0,0,0.7))",
+        sparkleAlpha: 1.4,
+        blueLift: 0.92
+      }
+    };
+
+    function getProfile() {
+      return visualProfiles[timeMode];
+    }
+
+    function applyTimeModeUI() {
+      const profile = getProfile();
+      tint.style.background = profile.tintBG;
+      tint.style.opacity = profile.tintOpacity;
+      timeButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.time === timeMode));
+    }
+
+    timeButtons.forEach(btn => {
+      btn.addEventListener("click", () => {
+        timeMode = btn.dataset.time;
+        applyTimeModeUI();
+      });
+    });
+
+    applyTimeModeUI();
+
+    const flowerPalettes = [
+      { stem:"#A8FFF0", leaf:"#88F6E5", a:"#79A3FF", b:"#D6E3FF", c:"#FFFFFF" },
+      { stem:"#A6FFE8", leaf:"#82F0D9", a:"#8B8DFF", b:"#ECE7FF", c:"#FFFFFF" },
+      { stem:"#B6F5FF", leaf:"#95ECFF", a:"#66B6FF", b:"#DBF2FF", c:"#FFFFFF" },
+      { stem:"#BAFFE8", leaf:"#8EF2D8", a:"#A48EFF", b:"#EEE9FF", c:"#FFFFFF" },
+      { stem:"#B8FFF4", leaf:"#8EF6E5", a:"#5F8FFF", b:"#DCE7FF", c:"#FFFFFF" }
+    ];
+
+    const vinePalettes = [
+      { stem:"#9CF9EF", leaf:"#72F7E0", node:"#CFF7FF", glow:"#8DEBFF" },
+      { stem:"#A6FFF0", leaf:"#83F5E1", node:"#E6FBFF", glow:"#A8D8FF" }
+    ];
+
+    const pearlPalette = {
+      stem: "#D7FBF5",
+      pearlCore: "#FFFFFF",
+      pearlEdge: "#C7DAFF"
+    };
+
+    const grassPalette = {
+      stemA: "#A8FFE3",
+      stemB: "#89F5D9",
+      glow: "rgba(175,255,230,1)"
+    };
+
+    let currentMode = "flowers";
+
+    const plants = [];
+    const butterflies = [];
+    const dragonflies = [];
+    const sparkles = [];
+    const seaGrass = [];
+
+    let currentGrowth = null;
+    let pinchActive = false;
+    let pinchLatch = false;
+    let grassGestureActive = false;
+    let grassGestureLatch = false;
+
+    let smoothPinchX = null;
+    let smoothPinchY = null;
+    let smoothIndexX = null;
+    let smoothIndexY = null;
+
+    let mouthOpenAmount = 0;
+
+    let headAnchor = null;
+    let leftShoulderAnchor = null;
+    let rightShoulderAnchor = null;
+
+    function setMode(mode) {
+      if (mode === "clear") {
+        plants.length = 0;
+        butterflies.length = 0;
+        dragonflies.length = 0;
+        sparkles.length = 0;
+        seaGrass.length = 0;
+        currentGrowth = null;
+        return;
+      }
+      currentMode = mode;
+      buttons.forEach(btn => btn.classList.toggle("active", btn.dataset.mode === mode));
+    }
+
+    buttons.forEach(btn => {
+      btn.addEventListener("click", () => setMode(btn.dataset.mode));
+    });
+
+    function spawnSparkles(x, y, count = 10, color = "255,255,255") {
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = rand(0.4, 2.2);
+        sparkles.push({
+          x, y,
+          vx: Math.cos(a) * s,
+          vy: Math.sin(a) * s,
+          alpha: 1 * getProfile().sparkleAlpha,
+          size: rand(1, 3),
+          color
+        });
+      }
+    }
+
+    function drawGlowLine(x1, y1, x2, y2, width, color, alpha = 1, blur = 18) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+
+      ctx.globalAlpha = alpha * 0.12 * neon;
+      ctx.lineWidth = width * 5;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = blur * neon;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      ctx.globalAlpha = alpha * 0.36 * neon;
+      ctx.lineWidth = width * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = width;
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawLeaf(x, y, angle, scale, color) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.scale(scale, scale);
+
+      const grad = ctx.createLinearGradient(-4, 0, 18, 0);
+      grad.addColorStop(0, "rgba(255,255,255,0.30)");
+      grad.addColorStop(1, color);
+      ctx.fillStyle = grad;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10 * neon;
+
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(10, -7, 18, 0);
+      ctx.quadraticCurveTo(10, 7, 0, 0);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawPearl(x, y, r = 7.8, alpha = 1) {
+      const neon = getProfile().neon;
+      ctx.save();
+      const grad = ctx.createRadialGradient(x - r * 0.38, y - r * 0.38, 0.5, x, y, r);
+      grad.addColorStop(0, `rgba(255,255,255,${alpha})`);
+      grad.addColorStop(0.5, `rgba(242,247,255,${alpha})`);
+      grad.addColorStop(1, `rgba(199,218,255,${alpha * 0.74})`);
+      ctx.fillStyle = grad;
+      ctx.shadowColor = "rgba(205,225,255,1)";
+      ctx.shadowBlur = 16 * neon;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawFlowerFront(type, x, y, palette, scale = 1, rotation = 0) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rotation);
+
+      const base = 11.8 * scale;
+
+      const halo = ctx.createRadialGradient(0, 0, 1, 0, 0, base * 2.7);
+      halo.addColorStop(0, "rgba(175,205,255,0.15)");
+      halo.addColorStop(1, "rgba(175,205,255,0)");
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(0, 0, base * 2.7, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (type === "round") {
+        for (let i = 0; i < 5; i++) {
+          ctx.save();
+          ctx.rotate((Math.PI * 2 / 5) * i);
+          const grad = ctx.createRadialGradient(0, -base * 1.0, 1, 0, -base * 1.0, base * 0.92);
+          grad.addColorStop(0, palette.b);
+          grad.addColorStop(1, palette.a);
+          ctx.fillStyle = grad;
+          ctx.shadowColor = palette.a;
+          ctx.shadowBlur = 13 * neon;
+          ctx.beginPath();
+          ctx.arc(0, -base * 1.05, base * 0.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      } else if (type === "star") {
+        for (let i = 0; i < 6; i++) {
+          ctx.save();
+          ctx.rotate((Math.PI * 2 / 6) * i);
+          const grad = ctx.createLinearGradient(0, -base * 1.9, 0, 0);
+          grad.addColorStop(0, palette.b);
+          grad.addColorStop(1, palette.a);
+          ctx.fillStyle = grad;
+          ctx.shadowColor = palette.a;
+          ctx.shadowBlur = 12 * neon;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(-base * 0.24, -base * 0.72);
+          ctx.lineTo(0, -base * 1.9);
+          ctx.lineTo(base * 0.24, -base * 0.72);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+      } else {
+        for (let i = 0; i < 4; i++) {
+          ctx.save();
+          ctx.rotate((Math.PI * 2 / 4) * i);
+          const grad = ctx.createLinearGradient(0, -base * 1.25, 0, 0);
+          grad.addColorStop(0, palette.b);
+          grad.addColorStop(1, palette.a);
+          ctx.fillStyle = grad;
+          ctx.shadowColor = palette.a;
+          ctx.shadowBlur = 12 * neon;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.quadraticCurveTo(base * 0.56, -base * 0.14, 0, -base * 1.35);
+          ctx.quadraticCurveTo(-base * 0.56, -base * 0.14, 0, 0);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      ctx.fillStyle = palette.c;
+      ctx.shadowColor = palette.c;
+      ctx.shadowBlur = 9 * neon;
+      ctx.beginPath();
+      ctx.arc(0, 0, base * 0.19 + 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawFlowerSide(type, x, y, palette, scale = 1, rotation = 0) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rotation);
+
+      const base = 12.5 * scale;
+
+      ctx.save();
+      ctx.rotate(-0.55);
+
+      const petalGrad = ctx.createLinearGradient(-base, -base * 0.2, base, base * 0.2);
+      petalGrad.addColorStop(0, palette.b);
+      petalGrad.addColorStop(1, palette.a);
+      ctx.fillStyle = petalGrad;
+      ctx.shadowColor = palette.a;
+      ctx.shadowBlur = 12 * neon;
+
+      if (type === "orchidSide") {
+        ctx.beginPath();
+        ctx.ellipse(0, -base * 0.12, base * 0.98, base * 0.56, -0.25, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.ellipse(base * 0.42, base * 0.12, base * 0.58, base * 0.36, 0.32, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(-base * 0.9, 0);
+        ctx.quadraticCurveTo(-base * 0.1, -base * 0.95, base * 0.96, -base * 0.16);
+        ctx.quadraticCurveTo(0, base * 0.36, -base * 0.9, 0);
+        ctx.fill();
+      }
+
+      ctx.restore();
+
+      ctx.fillStyle = palette.c;
+      ctx.shadowColor = palette.c;
+      ctx.shadowBlur = 8 * neon;
+      ctx.beginPath();
+      ctx.ellipse(base * 0.15, -base * 0.05, base * 0.16, base * 0.10, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function drawFlowerVariant(variant, x, y, palette, scale = 1, rotation = 0) {
+      if (variant === "sideBell" || variant === "orchidSide") {
+        drawFlowerSide(variant, x, y, palette, scale, rotation);
+      } else {
+        drawFlowerFront(variant, x, y, palette, scale, rotation);
+      }
+    }
+
+    function drawVineCurl(x, y, radius, angle, color) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.25;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10 * neon;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, Math.PI * 0.2, Math.PI * 1.65, false);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function createButterfly(x, y) {
+      butterflies.push({
+        x, y,
+        vx: rand(-0.45, 0.45),
+        vy: rand(-0.2, 0.2),
+        phase: Math.random() * Math.PI * 2,
+        size: rand(0.9, 1.25),
+        alpha: rand(0.62, 0.92),
+        perchTarget: null,
+        perchStrength: 0,
+        restPhase: Math.random() * Math.PI * 2
+      });
+    }
+
+    function createDragonfly(x, y) {
+      dragonflies.push({
+        x, y,
+        vx: rand(-0.9, 0.9),
+        vy: rand(-0.35, 0.35),
+        phase: Math.random() * Math.PI * 2,
+        size: rand(0.82, 1.18),
+        hueShift: rand(0, 1),
+        perchTarget: null,
+        perchStrength: 0
+      });
+    }
+
+    function drawButterfly(b) {
+      const neon = getProfile().neon;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+
+      const resting = b.perchStrength > 0.72;
+      const flap = resting
+        ? Math.sin(performance.now() * 0.004 + b.phase) * 0.14
+        : Math.sin(performance.now() * 0.014 + b.phase) * 0.55;
+      const s = b.size;
+
+      ctx.globalAlpha = b.alpha;
+
+      ctx.fillStyle = "#9AB6FF";
+      ctx.shadowColor = "#7EA4FF";
+      ctx.shadowBlur = 14 * neon;
+
+      ctx.save();
+      ctx.rotate(-flap);
+      ctx.beginPath();
+      ctx.ellipse(-9 * s, -4 * s, 8 * s, 13 * s, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(-8 * s, 9 * s, 6 * s, 8.5 * s, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.fillStyle = "#DCE6FF";
+      ctx.shadowColor = "#BFD2FF";
+      ctx.shadowBlur = 12 * neon;
+
+      ctx.save();
+      ctx.rotate(flap);
+      ctx.beginPath();
+      ctx.ellipse(9 * s, -4 * s, 8 * s, 13 * s, 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(8 * s, 9 * s, 6 * s, 8.5 * s, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(0, -9 * s);
+      ctx.lineTo(0, 10 * s);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawDragonfly(d) {
+      const neon = getProfile().neon;
+      const s = d.size;
+      const hover = Math.sin(performance.now() * 0.016 + d.phase) * 0.25;
+
+      ctx.save();
+      ctx.translate(d.x, d.y + hover);
+
+      const wingFlap = Math.sin(performance.now() * 0.026 + d.phase) * 0.28;
+      const wingA = d.hueShift > 0.5 ? "#C8F6FF" : "#D9E8FF";
+      const wingB = d.hueShift > 0.5 ? "#93E8FF" : "#9FB8FF";
+
+      ctx.strokeStyle = wingB;
+      ctx.shadowColor = wingB;
+      ctx.shadowBlur = 12 * neon;
+      ctx.lineWidth = 1.2;
+
+      ctx.save();
+      ctx.rotate(-wingFlap);
+      ctx.beginPath();
+      ctx.ellipse(-9 * s, -3 * s, 10 * s, 3.2 * s, -0.28, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(-7 * s, 4 * s, 8 * s, 2.8 * s, 0.12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.rotate(wingFlap);
+      ctx.beginPath();
+      ctx.ellipse(9 * s, -3 * s, 10 * s, 3.2 * s, 0.28, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.ellipse(7 * s, 4 * s, 8 * s, 2.8 * s, -0.12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = wingA;
+      ctx.shadowColor = wingA;
+      ctx.shadowBlur = 10 * neon;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 2.3 * s, 12 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(0, -10 * s, 1.8 * s, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
+    function createPlant(mode, x) {
+      const groundY = H * 0.9;
+      const isVine = mode === "vines";
+
+      const plant = {
+        mode,
+        palette: isVine ? choice(vinePalettes) : choice(flowerPalettes),
+        baseX: x,
+        baseY: groundY,
+        points: [{ x, y: groundY }],
+        stemWidth: isVine ? rand(1.55, 2.25) : rand(1.8, 3.0),
+        leafEvery: isVine ? Math.floor(rand(4, 7)) : Math.floor(rand(4, 7)),
+        swayOffset: Math.random() * Math.PI * 2,
+        swayAmount: rand(2.5, 8),
+        swaySpeed: rand(0.001, 0.0018),
+        bloom: 0,
+        growthVelocityX: 0,
+        growthVelocityY: -1,
+        lastPinchX: x,
+        lastPinchY: groundY,
+        decorations: [],
+        tipFlowerType: choice(["round", "star", "tiny4", "sideBell", "orchidSide"]),
+        tipFlowerScale: rand(0.98, 1.18)
+      };
+
+      plants.push(plant);
+      return plant;
+    }
+
+    function createSeaGrassField(seedX) {
+      const count = 14;
+      const band = 180;
+      for (let i = 0; i < count; i++) {
+        const x = clamp(seedX + rand(-band, band), 30, W - 30);
+        const h = rand(H * 0.13, H * 0.28);
+        seaGrass.push({
+          baseX: x,
+          baseY: H * 0.93,
+          height: h,
+          growth: 0,
+          width: rand(1.4, 2.6),
+          bend: rand(-18, 18),
+          swayOffset: Math.random() * Math.PI * 2,
+          swaySpeed: rand(0.0015, 0.0026),
+          colorMix: Math.random()
+        });
+      }
+      spawnSparkles(seedX, H * 0.88, 18, "180,255,220");
+    }
+
+    function startGrowthAtPinch(x, y) {
+      if (currentMode === "butterflies") {
+        if (Math.random() < 0.32) createDragonfly(x + rand(-15, 15), y + rand(-15, 15));
+        else createButterfly(x, y);
+        spawnSparkles(x, y, 8, "220,235,255");
+        return;
+      }
+
+      if (currentMode === "grass") return;
+
+      currentGrowth = createPlant(currentMode, x);
+      updatePlantWithPinch(currentGrowth, x, y, true);
+      spawnSparkles(x, H * 0.9, 8, "255,255,255");
+    }
+
+    function updatePlantWithPinch(plant, pinchX, pinchY, first = false) {
+      if (!pinchActive) return;
+
+      const groundY = plant.baseY;
+      const targetY = clamp(pinchY, 10, groundY - 10);
+      if (targetY >= groundY - 8) return;
+
+      const last = plant.points[plant.points.length - 1];
+      if (!last) return;
+
+      const fingerDX = pinchX - plant.lastPinchX;
+      const fingerDY = targetY - plant.lastPinchY;
+
+      plant.lastPinchX = pinchX;
+      plant.lastPinchY = targetY;
+
+      const desiredX = pinchX;
+      const desiredY = targetY;
+
+      let toTargetX = desiredX - last.x;
+      let toTargetY = desiredY - last.y;
+      let toTargetLen = Math.hypot(toTargetX, toTargetY) || 1;
+      toTargetX /= toTargetLen;
+      toTargetY /= toTargetLen;
+
+      let moveLen = Math.hypot(fingerDX, fingerDY);
+      let moveX = 0;
+      let moveY = -1;
+
+      if (moveLen > 0.0001) {
+        moveX = fingerDX / moveLen;
+        moveY = fingerDY / moveLen;
+      }
+
+      const isVine = plant.mode === "vines";
+      let dirX = toTargetX * (isVine ? 0.30 : 0.40) + moveX * (isVine ? 0.70 : 0.60);
+      let dirY = toTargetY * (isVine ? 0.30 : 0.40) + moveY * (isVine ? 0.70 : 0.60);
+
+      dirY = Math.min(dirY, isVine ? 0.06 : 0.02);
+
+      const dirLen = Math.hypot(dirX, dirY) || 1;
+      dirX /= dirLen;
+      dirY /= dirLen;
+
+      plant.growthVelocityX = plant.growthVelocityX * (isVine ? 0.35 : 0.42) + dirX * (isVine ? 0.65 : 0.58);
+      plant.growthVelocityY = plant.growthVelocityY * (isVine ? 0.35 : 0.42) + dirY * (isVine ? 0.65 : 0.58);
+
+      let vLen = Math.hypot(plant.growthVelocityX, plant.growthVelocityY) || 1;
+      let vx = plant.growthVelocityX / vLen;
+      let vy = plant.growthVelocityY / vLen;
+
+      vy = Math.min(vy, -0.02);
+
+      const stepBase = isVine ? 6.6 : 6.1;
+      const speedBoost = Math.min(1.85, Math.hypot(fingerDX, fingerDY) * 0.34 + 0.94);
+      const step = stepBase * speedBoost;
+
+      const newX = last.x + vx * step;
+      const newY = last.y + vy * step;
+
+      if (!first && newY > last.y + 2.2) return;
+      if (newY > groundY) return;
+      if (newY < 0) return;
+
+      const segDist = dist(last.x, last.y, newX, newY);
+      const subdivisions = Math.max(1, Math.ceil(segDist / 3));
+
+      for (let i = 1; i <= subdivisions; i++) {
+        const t = i / subdivisions;
+        const curvePull = isVine ? 0.24 : 0.14;
+
+        const ix = lerp(last.x, newX, t) + (desiredX - last.x) * curvePull * t * (1 - t);
+        const iy = lerp(last.y, newY, t) + (desiredY - last.y) * curvePull * t * (1 - t);
+
+        const prev = plant.points[plant.points.length - 1];
+        if (!prev || dist(prev.x, prev.y, ix, iy) > 1.6) {
+          plant.points.push({ x: ix, y: iy });
+          const idx = plant.points.length - 1;
+
+          if (plant.mode === "pearls" && idx % 4 === 0) {
+            plant.decorations.push({
+              type: "pearl",
+              pointIndex: idx,
+              size: rand(6.4, 8.9)
+            });
+          }
+
+          if (plant.mode === "flowers" && idx % 14 === 0) {
+            if (Math.random() < 0.34) {
+              plant.decorations.push({
+                type: "flower",
+                pointIndex: idx,
+                flowerType: choice(["round", "star", "tiny4", "sideBell", "orchidSide"]),
+                scale: rand(0.82, 1.04),
+                rotation: rand(-0.8, 0.8)
+              });
+            }
+          }
+
+          if (plant.mode === "vines") {
+            if (idx % 10 === 0 && Math.random() < 0.65) {
+              plant.decorations.push({
+                type: "vineNode",
+                pointIndex: idx,
+                side: Math.random() < 0.5 ? -1 : 1,
+                size: rand(0.9, 1.25)
+              });
+            }
+            if (idx % 13 === 0 && Math.random() < 0.55) {
+              plant.decorations.push({
+                type: "vineCurl",
+                pointIndex: idx,
+                side: Math.random() < 0.5 ? -1 : 1,
+                size: rand(6, 11),
+                rotation: rand(-0.45, 0.45)
+              });
+            }
+          }
+        }
+      }
+    }
+
+    function finishGrowth() {
+      currentGrowth = null;
+    }
+
+    function getAnimatedPoints(plant) {
+      const time = performance.now();
+      const pts = [];
+      const total = plant.points.length;
+
+      for (let i = 0; i < total; i++) {
+        const p = plant.points[i];
+        const t = total <= 1 ? 0 : i / (total - 1);
+        const sway = Math.sin(time * plant.swaySpeed + plant.swayOffset + t * 3.1) * plant.swayAmount * t;
+        pts.push({ x: p.x + sway, y: p.y });
+      }
+      return pts;
+    }
+
+    function drawPearlString(plant, pts) {
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        drawGlowLine(p0.x, p0.y, p1.x, p1.y, 1.2, "rgba(230,245,255,0.92)", 0.95, 10);
+      }
+
+      for (const deco of plant.decorations) {
+        const p = pts[Math.min(deco.pointIndex, pts.length - 1)];
+        if (!p) continue;
+        drawPearl(p.x, p.y, deco.size, 0.98);
+      }
+
+      const tip = pts[pts.length - 1];
+      drawPearl(tip.x, tip.y, 8.8, 1);
+    }
+
+    function drawFlowerStem(plant, pts) {
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const width = plant.stemWidth * (0.76 + 0.28 * (i / pts.length));
+        drawGlowLine(p0.x, p0.y, p1.x, p1.y, width, plant.palette.stem, 1);
+
+        if (i % plant.leafEvery === 0) {
+          const a = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+          const side = i % (plant.leafEvery * 2) === 0 ? 1 : -1;
+          drawLeaf(
+            p1.x + Math.cos(a + side * Math.PI / 2) * 4.8,
+            p1.y + Math.sin(a + side * Math.PI / 2) * 4.8,
+            a + side * 0.95,
+            0.38 + (i / pts.length) * 0.22,
+            plant.palette.leaf
+          );
+        }
+      }
+    }
+
+    function drawVineStem(plant, pts) {
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const width = plant.stemWidth * (0.70 + 0.24 * (i / pts.length));
+        drawGlowLine(p0.x, p0.y, p1.x, p1.y, width, plant.palette.stem, 1, 20);
+
+        if (i % plant.leafEvery === 0) {
+          const a = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+          const side = i % (plant.leafEvery * 2) === 0 ? 1 : -1;
+          drawLeaf(
+            p1.x + Math.cos(a + side * Math.PI / 2) * 4.2,
+            p1.y + Math.sin(a + side * Math.PI / 2) * 4.2,
+            a + side * 0.85,
+            0.28 + (i / pts.length) * 0.12,
+            plant.palette.leaf
+          );
+        }
+      }
+
+      for (const deco of plant.decorations) {
+        const p = pts[Math.min(deco.pointIndex, pts.length - 1)];
+        if (!p) continue;
+
+        if (deco.type === "vineNode") {
+          const r = 2.5 * deco.size;
+          const neon = getProfile().neon;
+          ctx.save();
+          ctx.fillStyle = plant.palette.node;
+          ctx.shadowColor = plant.palette.glow;
+          ctx.shadowBlur = 12 * neon;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        if (deco.type === "vineCurl") {
+          const prev = pts[Math.max(0, Math.min(deco.pointIndex, pts.length - 1) - 1)] || p;
+          const a = Math.atan2(p.y - prev.y, p.x - prev.x);
+          const sideAngle = a + deco.side * 1.18 + deco.rotation;
+          const offsetX = Math.cos(a + deco.side * Math.PI / 2) * 5;
+          const offsetY = Math.sin(a + deco.side * Math.PI / 2) * 5;
+          drawVineCurl(p.x + offsetX, p.y + offsetY, deco.size, sideAngle, plant.palette.glow);
+        }
+      }
+    }
+
+    function drawPlant(plant) {
+      const pts = getAnimatedPoints(plant);
+      if (pts.length < 2) return;
+
+      if (plant.mode === "pearls") {
+        drawPearlString(plant, pts);
+        return;
+      }
+
+      if (plant.mode === "vines") {
+        drawVineStem(plant, pts);
+      } else {
+        drawFlowerStem(plant, pts);
+      }
+
+      if (plant.mode === "flowers") {
+        for (const deco of plant.decorations) {
+          const p = pts[Math.min(deco.pointIndex, pts.length - 1)];
+          if (!p) continue;
+
+          const bloomAmount = clamp(0.50 + plant.bloom * 0.70, 0.50, 1.16) * deco.scale;
+          drawFlowerVariant(
+            deco.flowerType,
+            p.x,
+            p.y,
+            plant.palette,
+            bloomAmount,
+            deco.rotation
+          );
+        }
+
+        const tip = pts[pts.length - 1];
+        const tipScale = clamp(0.70 + plant.bloom * 0.56, 0.70, 1.26) * plant.tipFlowerScale;
+        drawFlowerVariant(
+          plant.tipFlowerType,
+          tip.x,
+          tip.y,
+          plant.palette,
+          tipScale,
+          0
+        );
+      } else if (plant.mode === "vines") {
+        const tip = pts[pts.length - 1];
+        const neon = getProfile().neon;
+        ctx.save();
+        ctx.fillStyle = plant.palette.node;
+        ctx.shadowColor = plant.palette.glow;
+        ctx.shadowBlur = 12 * neon;
+        ctx.beginPath();
+        ctx.arc(tip.x, tip.y, 3.1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function updatePlants() {
+      const targetBloom = mouthOpenAmount > 0.35 ? 1 : 0.18;
+      for (const p of plants) {
+        p.bloom = lerp(p.bloom, targetBloom, mouthOpenAmount > 0.35 ? 0.09 : 0.04);
+      }
+    }
+
+    function drawSeaGrassBlade(g) {
+      const neon = getProfile().neon;
+      const grown = g.height * g.growth;
+      if (grown < 4) return;
+
+      const time = performance.now();
+      const sway = Math.sin(time * g.swaySpeed + g.swayOffset) * 18;
+      const bend = g.bend + sway;
+      const topX = g.baseX + bend;
+      const topY = g.baseY - grown;
+
+      const color = g.colorMix > 0.5 ? grassPalette.stemA : grassPalette.stemB;
+
+      ctx.save();
+      const grad = ctx.createLinearGradient(g.baseX, g.baseY, topX, topY);
+      grad.addColorStop(0, "rgba(168,255,227,0.22)");
+      grad.addColorStop(1, color);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = g.width;
+      ctx.lineCap = "round";
+      ctx.shadowColor = grassPalette.glow;
+      ctx.shadowBlur = 13 * neon;
+      ctx.beginPath();
+      ctx.moveTo(g.baseX, g.baseY);
+      ctx.quadraticCurveTo(
+        g.baseX + bend * 0.2,
+        g.baseY - grown * 0.45,
+        topX,
+        topY
+      );
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function updateSeaGrass() {
+      for (const g of seaGrass) {
+        g.growth = lerp(g.growth, 1, 0.05);
+      }
+    }
+
+    function drawSeaGrass() {
+      for (const g of seaGrass) drawSeaGrassBlade(g);
+    }
+
+    function getPerchTargets() {
+      const targets = [];
+
+      if (headAnchor) {
+        targets.push({ x: headAnchor.x - 26, y: headAnchor.y - 6 });
+        targets.push({ x: headAnchor.x + 20, y: headAnchor.y - 12 });
+        targets.push({ x: headAnchor.x, y: headAnchor.y - 28 });
+      }
+
+      if (leftShoulderAnchor) {
+        targets.push({ x: leftShoulderAnchor.x, y: leftShoulderAnchor.y - 10 });
+      }
+
+      if (rightShoulderAnchor) {
+        targets.push({ x: rightShoulderAnchor.x, y: rightShoulderAnchor.y - 10 });
+      }
+
+      return targets;
+    }
+
+    function updateButterflies() {
+      const targets = getPerchTargets();
+
+      for (const b of butterflies) {
+        const shouldPerch = targets.length > 0 && Math.random() < 0.012;
+
+        if (!b.perchTarget && shouldPerch) {
+          b.perchTarget = choice(targets);
+        }
+
+        if (b.perchTarget) {
+          b.perchStrength = lerp(b.perchStrength, 1, 0.035);
+          b.x = lerp(b.x, b.perchTarget.x, 0.04);
+          b.y = lerp(b.y, b.perchTarget.y + Math.sin(performance.now() * 0.003 + b.restPhase) * 1.2, 0.04);
+
+          const dPerch = dist(b.x, b.y, b.perchTarget.x, b.perchTarget.y);
+          if (dPerch < 10 && Math.random() < 0.0035) {
+            b.perchTarget = null;
+          }
+        } else {
+          b.perchStrength = lerp(b.perchStrength, 0, 0.05);
+          b.x += b.vx + Math.sin(performance.now() * 0.002 + b.phase) * 0.26;
+          b.y += b.vy + Math.cos(performance.now() * 0.0026 + b.phase) * 0.16;
+
+          if (smoothIndexX != null && smoothIndexY != null && pinchActive) {
+            const dx = b.x - smoothIndexX;
+            const dy = b.y - smoothIndexY;
+            const d = Math.hypot(dx, dy);
+            const radius = 120;
+            if (d < radius && d > 0.001) {
+              const push = (radius - d) / radius;
+              b.x += (dx / d) * push * 2.6;
+              b.y += (dy / d) * push * 2.6;
+            }
+          }
+        }
+
+        if (b.x < -80) b.x = W + 80;
+        if (b.x > W + 80) b.x = -80;
+        if (b.y < -60) b.y = H + 60;
+        if (b.y > H + 60) b.y = -60;
+      }
+    }
+
+    function updateDragonflies() {
+      const targets = getPerchTargets();
+
+      for (const d of dragonflies) {
+        const shouldPerch = targets.length > 0 && Math.random() < 0.008;
+
+        if (!d.perchTarget && shouldPerch) {
+          d.perchTarget = choice(targets);
+        }
+
+        if (d.perchTarget) {
+          d.perchStrength = lerp(d.perchStrength, 1, 0.03);
+          d.x = lerp(d.x, d.perchTarget.x, 0.055);
+          d.y = lerp(d.y, d.perchTarget.y - 8, 0.055);
+
+          if (dist(d.x, d.y, d.perchTarget.x, d.perchTarget.y - 8) < 8 && Math.random() < 0.004) {
+            d.perchTarget = null;
+          }
+        } else {
+          d.perchStrength = lerp(d.perchStrength, 0, 0.04);
+          d.phase += 0.03;
+          d.x += d.vx + Math.cos(performance.now() * 0.004 + d.phase) * 0.65;
+          d.y += d.vy + Math.sin(performance.now() * 0.005 + d.phase) * 0.35;
+
+          if (smoothIndexX != null && smoothIndexY != null && pinchActive) {
+            const dx = d.x - smoothIndexX;
+            const dy = d.y - smoothIndexY;
+            const dd = Math.hypot(dx, dy);
+            if (dd < 130 && dd > 0.001) {
+              const push = (130 - dd) / 130;
+              d.x += (dx / dd) * push * 3.2;
+              d.y += (dy / dd) * push * 3.2;
+            }
+          }
+        }
+
+        if (d.x < -90) d.x = W + 90;
+        if (d.x > W + 90) d.x = -90;
+        if (d.y < -60) d.y = H + 60;
+        if (d.y > H + 60) d.y = -60;
+      }
+    }
+
+    function updateSparkles() {
+      for (let i = sparkles.length - 1; i >= 0; i--) {
+        const s = sparkles[i];
+        s.x += s.vx;
+        s.y += s.vy;
+        s.vx *= 0.985;
+        s.vy *= 0.985;
+        s.alpha -= 0.025;
+        if (s.alpha <= 0) sparkles.splice(i, 1);
+      }
+    }
+
+    function drawSparkles() {
+      const neon = getProfile().neon;
+      for (const s of sparkles) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, s.alpha);
+        ctx.fillStyle = `rgba(${s.color},1)`;
+        ctx.shadowColor = `rgba(${s.color},1)`;
+        ctx.shadowBlur = 14 * neon;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawCursor() {
+      const neon = getProfile().neon;
+      if (!pinchActive) return;
+      if (smoothIndexX == null || smoothIndexY == null) return;
+
+      ctx.save();
+      ctx.globalAlpha = 0.98;
+      ctx.fillStyle = "rgba(255,255,255,1)";
+      ctx.shadowColor = "rgba(180,220,255,1)";
+      ctx.shadowBlur = 18 * neon;
+      ctx.beginPath();
+      ctx.arc(smoothIndexX, smoothIndexY, 6.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function isIndexThumbOnlyPinch(hand) {
+      const thumb = hand[4];
+      const index = hand[8];
+      const middle = hand[12];
+      const ring = hand[16];
+      const pinky = hand[20];
+
+      const dIndex = dist(thumb.x, thumb.y, index.x, index.y);
+      const dMiddle = dist(thumb.x, thumb.y, middle.x, middle.y);
+      const dRing = dist(thumb.x, thumb.y, ring.x, ring.y);
+      const dPinky = dist(thumb.x, thumb.y, pinky.x, pinky.y);
+
+      return dIndex < 0.06 && dMiddle > 0.09 && dRing > 0.10 && dPinky > 0.11;
+    }
+
+    function isRockSign(hand) {
+      const indexTip = hand[8], pinkyTip = hand[20];
+      const middleTip = hand[12], ringTip = hand[16];
+      const indexPip = hand[6], pinkyPip = hand[18];
+      const middlePip = hand[10], ringPip = hand[14];
+      const thumbTip = hand[4], thumbIp = hand[3];
+
+      const indexUp = indexTip.y < indexPip.y;
+      const pinkyUp = pinkyTip.y < pinkyPip.y;
+      const middleDown = middleTip.y > middlePip.y - 0.005;
+      const ringDown = ringTip.y > ringPip.y - 0.005;
+      const thumbOut = Math.abs(thumbTip.x - thumbIp.x) > 0.015 || thumbTip.y > thumbIp.y - 0.01;
+
+      return indexUp && pinkyUp && middleDown && ringDown && thumbOut;
+    }
+
+    function handleHand(hand) {
+      const thumb = hand[4];
+      const index = hand[8];
+
+      const pinchX = ((thumb.x + index.x) * 0.5) * W;
+      const pinchY = ((thumb.y + index.y) * 0.5) * H;
+
+      const indexX = index.x * W;
+      const indexY = index.y * H;
+
+      if (smoothPinchX == null) {
+        smoothPinchX = pinchX;
+        smoothPinchY = pinchY;
+        smoothIndexX = indexX;
+        smoothIndexY = indexY;
+      } else {
+        smoothPinchX = lerp(smoothPinchX, pinchX, 0.62);
+        smoothPinchY = lerp(smoothPinchY, pinchY, 0.62);
+        smoothIndexX = lerp(smoothIndexX, indexX, 0.56);
+        smoothIndexY = lerp(smoothIndexY, indexY, 0.56);
+      }
+
+      pinchActive = isIndexThumbOnlyPinch(hand);
+      grassGestureActive = isRockSign(hand);
+
+      if (currentMode === "grass") {
+        if (grassGestureActive && !grassGestureLatch) {
+          grassGestureLatch = true;
+          createSeaGrassField(indexX);
+        }
+      } else {
+        grassGestureLatch = false;
+      }
+
+      if (currentMode !== "grass") {
+        if (pinchActive && !pinchLatch) {
+          pinchLatch = true;
+          startGrowthAtPinch(smoothPinchX, smoothPinchY);
+        }
+
+        if (pinchActive && currentGrowth) {
+          updatePlantWithPinch(currentGrowth, smoothPinchX, smoothPinchY);
+        }
+
+        if (!pinchActive && pinchLatch) {
+          pinchLatch = false;
+          finishGrowth();
+        }
+      } else {
+        if (!pinchActive) {
+          pinchLatch = false;
+          finishGrowth();
+        }
+      }
+    }
+
+    function updateMouthOpen(faceLandmarks) {
+      if (!faceLandmarks || faceLandmarks.length < 309) {
+        mouthOpenAmount = lerp(mouthOpenAmount, 0, 0.12);
+        headAnchor = null;
+        leftShoulderAnchor = null;
+        rightShoulderAnchor = null;
+        return;
+      }
+
+      const upper = faceLandmarks[13];
+      const lower = faceLandmarks[14];
+      const left = faceLandmarks[78];
+      const right = faceLandmarks[308];
+
+      if (!upper || !lower || !left || !right) {
+        mouthOpenAmount = lerp(mouthOpenAmount, 0, 0.12);
+      } else {
+        const vertical = Math.abs(lower.y - upper.y);
+        const horizontal = Math.abs(right.x - left.x) || 0.001;
+        const ratio = vertical / horizontal;
+        const amount = clamp((ratio - 0.12) / 0.22, 0, 1);
+        mouthOpenAmount = lerp(mouthOpenAmount, amount, 0.18);
+      }
+
+      const forehead = faceLandmarks[10];
+      const chin = faceLandmarks[152];
+      const leftFace = faceLandmarks[234];
+      const rightFace = faceLandmarks[454];
+
+      if (forehead && chin && leftFace && rightFace) {
+        const cx = ((leftFace.x + rightFace.x) * 0.5) * W;
+        const headTopY = forehead.y * H;
+        const headHeight = Math.abs(chin.y - forehead.y) * H;
+
+        headAnchor = {
+          x: cx,
+          y: headTopY + headHeight * 0.08
+        };
+
+        leftShoulderAnchor = {
+          x: leftFace.x * W - headHeight * 0.28,
+          y: chin.y * H + headHeight * 0.34
+        };
+
+        rightShoulderAnchor = {
+          x: rightFace.x * W + headHeight * 0.28,
+          y: chin.y * H + headHeight * 0.34
+        };
+      }
+    }
+
+    function drawFrame() {
+      ctx.clearRect(0, 0, W, H);
+
+      updatePlants();
+      updateSeaGrass();
+      updateButterflies();
+      updateDragonflies();
+      updateSparkles();
+
+      drawSeaGrass();
+      for (const p of plants) drawPlant(p);
+      for (const b of butterflies) drawButterfly(b);
+      for (const d of dragonflies) drawDragonfly(d);
+      drawSparkles();
+      drawCursor();
+
+      requestAnimationFrame(drawFrame);
+    }
+
+    const hands = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.65
+    });
+
+    hands.onResults(results => {
+      const hand = (results.multiHandLandmarks && results.multiHandLandmarks[0]) || null;
+
+      if (hand) {
+        handleHand(hand);
+      } else {
+        pinchActive = false;
+        pinchLatch = false;
+        grassGestureActive = false;
+        grassGestureLatch = false;
+        smoothPinchX = null;
+        smoothPinchY = null;
+        smoothIndexX = null;
+        smoothIndexY = null;
+        finishGrowth();
+      }
+    });
+
+    const faceMesh = new FaceMesh({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.55,
+      minTrackingConfidence: 0.55
+    });
+
+    faceMesh.onResults(results => {
+      const face = (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) || null;
+      updateMouthOpen(face);
+    });
+
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({ image: video });
+        await faceMesh.send({ image: video });
+      },
+      width: 960,
+      height: 540
+    });
+
+    camera.start();
+    drawFrame();
+  </script>
+</body>
+</html>
